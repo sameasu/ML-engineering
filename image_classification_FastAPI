@@ -1,0 +1,95 @@
+import io
+from PIL import Image
+from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi.responses import JSONResponse
+import threading
+from transformers import AutoModelForImageClassification, AutoFeatureExtractor
+
+# Singleton class for Hugging Face ResNet-18 model loading
+class SingletonResNet18ModelLoader:
+    """
+    Singleton class to ensure the Hugging Face ResNet-18 model is loaded only once into memory.
+    """
+    _instance = None
+    _lock = threading.Lock()  # Lock for thread safety
+
+    def __new__(cls):
+        """
+        Override the __new__ method to implement the Singleton pattern.
+        """
+        with cls._lock:  # Ensure thread safety
+            if cls._instance is None:
+                cls._instance = super(SingletonResNet18ModelLoader, cls).__new__(cls)
+                cls._instance._initialize()
+        return cls._instance
+
+    def _initialize(self):
+        """
+        Private method to initialize the ResNet-18 model and feature extractor.
+        """
+        try:
+            # Load the pretrained ResNet-18 model and feature extractor from Hugging Face
+            self.model = AutoModelForImageClassification.from_pretrained("microsoft/resnet-18")
+            self.feature_extractor = AutoFeatureExtractor.from_pretrained("microsoft/resnet-18")
+            print("ResNet-18 model and feature extractor loaded successfully.")
+        except Exception as e:
+            print(f"Error loading ResNet-18 model: {e}")
+            raise
+
+    def predict(self, image: Image.Image):
+        """
+        Perform inference using the loaded ResNet-18 model.
+        """
+        try:
+            # Preprocess the image using the feature extractor
+            inputs = self.feature_extractor(images=image, return_tensors="pt")
+
+            # Perform inference
+            outputs = self.model(**inputs)
+            logits = outputs.logits
+
+            # Get the predicted class index
+            predicted_class_idx = logits.argmax(-1).item()
+
+            # Get the class label
+            predicted_label = self.model.config.id2label[predicted_class_idx]
+
+            return predicted_label
+        except Exception as e:
+            print(f"Error during prediction: {e}")
+            raise
+
+
+# Initialize FastAPI app
+app = FastAPI()
+
+# Load the ResNet-18 model using the SingletonResNet18ModelLoader
+try:
+    model_loader = SingletonResNet18ModelLoader()
+except Exception as e:
+    print(f"Error initializing ResNet-18 model: {e}")
+    raise
+
+
+@app.post("/upload-image/")
+async def upload_image(file: UploadFile = File(...)):
+    """
+    Endpoint to upload an image and classify it using the ResNet-18 model.
+    """
+    try:
+        # Check if the uploaded file is an image
+        if not file.content_type.startswith("image/"):
+            raise HTTPException(status_code=400, detail="Uploaded file is not an image.")
+
+        # Read the image file
+        image_data = await file.read()
+        image = Image.open(io.BytesIO(image_data)).convert("RGB")  # Ensure the image is in RGB format
+
+        # Perform prediction
+        predicted_label = model_loader.predict(image)
+
+        # Return the prediction as a JSON response
+        return JSONResponse(content={"predicted_label": predicted_label})
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"An error occurred: {e}")
